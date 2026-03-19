@@ -79,7 +79,7 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif text == "📁 Экспорт Excel":
         await export_stats(update, context)
     elif text == "📝 Редактировать историю":
-        await edit_history(update, context)
+        await edit_history_command(update, context)
     elif text == "❌ Отмена":
         await cancel(update, context)
     else:
@@ -90,13 +90,11 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
-    # Проверяем, не начата ли уже игра
     active_game = get_active_game(chat_id)
     if active_game:
         await update.message.reply_text("У вас уже есть начатая партия. Сначала завершите её.")
         return
 
-    # Проверяем активную сессию
     active_session = get_active_session(chat_id)
     if not active_session:
         session_id = create_session(chat_id)
@@ -106,7 +104,6 @@ async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         session_id = active_session[0]
 
-    # Запускаем игру
     game_start = datetime.now().isoformat()
     set_active_game(chat_id, game_start)
 
@@ -125,11 +122,9 @@ async def end_game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Нет активной партии.")
         return
 
-    # Сохраняем время начала и удаляем активную игру
     context.user_data['game_start'] = active_game_start
     clear_active_game(chat_id)
 
-    # Устанавливаем состояние ожидания ввода счёта Юрия
     context.user_data['state'] = 'awaiting_score_yuri'
     await query.edit_message_text("Сколько шаров забил Юрий? (введите число)")
 
@@ -480,7 +475,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not game_id or not session_id:
             await update.message.reply_text("Ошибка: данные не найдены.")
             return
-        conn = sqlite3.connect('billiard.db')
+        conn = sqlite3.connect(os.getenv('DB_PATH', 'billiard.db'))
         cur = conn.cursor()
         cur.execute("SELECT duration_minutes FROM games WHERE id=?", (game_id,))
         row = cur.fetchone()
@@ -523,7 +518,8 @@ def create_excel_file():
     for col in range(1, len(headers)+1):
         ws.cell(row=1, column=col).font = Font(bold=True)
 
-    conn = sqlite3.connect('billiard.db')
+    db_path = os.getenv('DB_PATH', 'billiard.db')
+    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute("SELECT * FROM games ORDER BY date, start_time")
     rows = cur.fetchall()
@@ -533,7 +529,7 @@ def create_excel_file():
         ws.append(row)
 
     total_row = ["ИТОГО"] + [""] * (len(headers)-1)
-    sum_cols = [9, 10, 15, 16]  # индексы колонок для суммирования (начиная с 1)
+    sum_cols = [9, 10, 15, 16]
     for i, row in enumerate(rows, start=2):
         for col_idx in sum_cols:
             try:
@@ -564,11 +560,12 @@ async def export_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.unlink(file_path)
 
 # ------------------ Редактирование истории (выбор сессии) ------------------
-@restricted
-async def edit_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Убираем @restricted, так как будем вызывать из других функций
+async def edit_history(message, context: ContextTypes.DEFAULT_TYPE):
+    print("edit_history вызван", flush=True)
     sessions = get_recent_sessions(None, limit=5)
     if not sessions:
-        await update.message.reply_text("История пуста.")
+        await message.reply_text("История пуста.")
         return
 
     keyboard = []
@@ -578,7 +575,12 @@ async def edit_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"session_{s['id']}")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="edit_back")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите сессию для редактирования:", reply_markup=reply_markup)
+    await message.reply_text("Выберите сессию для редактирования:", reply_markup=reply_markup)
+
+# Команда для вызова из меню
+@restricted
+async def edit_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await edit_history(update.message, context)
 
 # ------------------ Обработчик выбора сессии ------------------
 async def session_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -599,7 +601,6 @@ async def session_choice_callback(update: Update, context: ContextTypes.DEFAULT_
 
         games = get_games_by_session(session_id)
         if not games:
-            # Сессия пуста – предлагаем удалить
             keyboard = [
                 [InlineKeyboardButton("🗑 Удалить сессию", callback_data=f"del_session_{session_id}")],
                 [InlineKeyboardButton("🔙 Назад к сессиям", callback_data="back_to_sessions")]
@@ -611,7 +612,6 @@ async def session_choice_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
-        # Формируем текст с информацией о сессии
         first_game_date = games[0]['date'] if games else "неизвестно"
         text = f"📅 **Сессия от {first_game_date}**\n\n"
         for g in games:
@@ -650,7 +650,8 @@ async def edit_game_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            conn = sqlite3.connect('billiard.db')
+            db_path = os.getenv('DB_PATH', 'billiard.db')
+            conn = sqlite3.connect(db_path)
             cur = conn.cursor()
             cur.execute("SELECT session_id FROM games WHERE id=?", (game_id,))
             row = cur.fetchone()
@@ -678,7 +679,8 @@ async def edit_game_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            conn = sqlite3.connect('billiard.db')
+            db_path = os.getenv('DB_PATH', 'billiard.db')
+            conn = sqlite3.connect(db_path)
             cur = conn.cursor()
             cur.execute("SELECT session_id FROM games WHERE id=?", (game_id,))
             row = cur.fetchone()
@@ -697,7 +699,6 @@ async def edit_game_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await query.edit_message_text("Игра удалена. Накопленные итоги пересчитаны.")
-        # Возвращаемся к списку игр этой сессии
         games = get_games_by_session(session_id)
         if games:
             text = f"📅 **Сессия от {games[0]['date']}**\n\n"
@@ -794,7 +795,8 @@ async def edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not game_id or not session_id:
             await query.edit_message_text("Ошибка: данные не найдены.")
             return
-        conn = sqlite3.connect('billiard.db')
+        db_path = os.getenv('DB_PATH', 'billiard.db')
+        conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute("DELETE FROM games WHERE id=?", (game_id,))
         conn.commit()
@@ -810,7 +812,6 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = update.callback_query.data
     print(f"🔍 Получен callback: {data}", flush=True)
 
-    # Определяем, какой обработчик вызвать
     if data == "end_game":
         await end_game_callback(update, context)
     elif data.startswith("type_"):
@@ -848,19 +849,16 @@ def main():
     else:
         application = Application.builder().token(TOKEN).build()
 
-    # Универсальный обработчик всех колбэков
     application.add_handler(CallbackQueryHandler(universal_callback))
 
-    # Команды и текстовые кнопки
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & filters.Regex("^(🎱 Новая игра|📊 Статистика|📁 Экспорт Excel|📝 Редактировать историю|❌ Отмена)$"), handle_menu_buttons))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("export", export_stats))
     application.add_handler(CommandHandler("edit_last", edit_last))
-    application.add_handler(CommandHandler("edit_history", edit_history))
+    application.add_handler(CommandHandler("edit_history", edit_history_command))
     application.add_handler(CommandHandler("cancel", cancel))
 
-    # Общий обработчик текста (для ввода чисел, названий и т.д.)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     application.run_polling()
